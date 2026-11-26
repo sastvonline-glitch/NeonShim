@@ -3312,15 +3312,19 @@ impl Shadow {
         // (`crate::indirect::gather_by_copy`); a copy in place is written
         // by the shaders as any other.
         list.gather_wrote(self.id);
+        let len = len.min(self.left(address));
         // In place the shaders write title memory itself: no snapshot, no
-        // compare, nothing to copy back, and no wait on its account.
+        // compare, nothing to copy back. The range still goes with the
+        // flight, so that until it has run the CPU reads none of it and no
+        // value wait on it is taken as met (with LATE_WAIT the flight is not
+        // waited for at submission).
         // shortcut: another host copy of the same bytes (a title buffer
         // inside this one with a copy of its own, a texture in it) is not
         // told: the card's writes are not seen by write watching.
         if self.place.is_some() {
+            list.defer_placed_write(address as usize, len as usize);
             return;
         }
-        let len = len.min(self.left(address));
         crate::writestats::wrote(len);
         list.defer_gpu_write(self, address as usize, len as usize);
     }

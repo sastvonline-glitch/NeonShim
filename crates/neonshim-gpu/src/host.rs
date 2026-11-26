@@ -2535,6 +2535,10 @@ struct Deferred {
     back_wanted: Vec<crate::texback::Target>,
     /// Those copies, whose texels go to title memory once the list has run.
     texture_backs: Vec<crate::texback::Back>,
+    /// Title memory in place ([`crate::inplace`]) the list's shaders may
+    /// write: nothing to copy back, but until the list has run the CPU must
+    /// not read it and value waits must not take it as settled.
+    placed_writes: Vec<(usize, usize)>,
     /// Whether the indirect-work budget is zeroed for this recording (a
     /// step on the CPU, or in the list for the card's copy).
     budget_zeroed: bool,
@@ -3017,8 +3021,9 @@ struct Sent {
     number: u64,
     card: Option<CardPlan>,
     back: Vec<Declared>,
-    /// Title-memory ranges written when its shader textures are copied back.
-    texture_back_ranges: Vec<(usize, usize)>,
+    /// Title-memory ranges the card writes with nothing of ours to merge:
+    /// shader textures copied back, and memory in place its shaders write.
+    landing_written: Vec<(usize, usize)>,
     /// Its bottom-of-pipe writes.
     writes: Vec<(usize, crate::queue::Written, usize)>,
 }
@@ -3034,7 +3039,7 @@ struct Flight {
     order: Vec<usize>,
     card: Option<CardPlan>,
     back: Vec<Declared>,
-    texture_back_ranges: Vec<(usize, usize)>,
+    landing_written: Vec<(usize, usize)>,
 }
 
 /// One thing in the line of what waits for the card, in order.
@@ -4322,6 +4327,26 @@ fn late_line(frames: f64) {
 #[cfg(test)]
 mod late_tests {
     use super::{continues, join_ranges, touches};
+
+    /// Memory in place a list's shaders write is kept with the list (once
+    /// per range in a row, nothing for an empty one), and makes the list
+    /// one that does work.
+    #[test]
+    fn placed_writes_are_kept_with_the_list() {
+        let Some(host) = super::host() else {
+            return; // no host GPU
+        };
+        let Ok(list) = host.new_list() else {
+            return;
+        };
+        list.defer_placed_write(0x4000, 0);
+        assert!(list.deferred().placed_writes.is_empty());
+        list.defer_placed_write(0x4000, 0x100);
+        list.defer_placed_write(0x4000, 0x100);
+        list.defer_placed_write(0x8000, 0x40);
+        assert_eq!(list.deferred().placed_writes, [(0x4000, 0x4100), (0x8000, 0x8040)]);
+        assert!(!list.untouched());
+    }
 
     /// Copies join only when both ends continue and the whole does not
     /// overlap itself.
@@ -6126,7 +6151,7 @@ impl Host {
                 if let Late::Run(flight) = item {
                     *lists += flight.order.len().max(1);
                     ranges.extend(flight.back.iter().flat_map(|(_, r)| r.iter().copied()));
-                    ranges.extend(flight.texture_back_ranges.iter().copied());
+                    ranges.extend(flight.landing_written.iter().copied());
                 }
             }
             join_ranges(written, ranges);
@@ -6348,7 +6373,7 @@ impl Host {
                 sent.back
                     .iter()
                     .flat_map(|(_, ranges)| ranges.iter().copied())
-                    .chain(sent.texture_back_ranges.iter().copied()),
+                    .chain(sent.landing_written.iter().copied()),
             );
             *flying += order.len();
             *target = *submitted;
@@ -6359,7 +6384,7 @@ impl Host {
                 order,
                 card: sent.card,
                 back: sent.back,
-                texture_back_ranges: sent.texture_back_ranges,
+                landing_written: sent.landing_written,
             }));
             items.extend(sent.writes.into_iter().map(|(at, what, bytes)| Late::Write(at, what, bytes)));
             *flying >= late_most()
@@ -6399,7 +6424,7 @@ impl Host {
                 sent.back
                     .iter()
                     .flat_map(|(_, ranges)| ranges.iter().copied())
-                    .chain(sent.texture_back_ranges.iter().copied()),
+                    .chain(sent.landing_written.iter().copied()),
             );
             *flying += 1;
             *target = *submitted;
@@ -6410,7 +6435,7 @@ impl Host {
                 order: Vec::new(),
                 card: sent.card,
                 back: sent.back,
-                texture_back_ranges: sent.texture_back_ranges,
+                landing_written: sent.landing_written,
             }));
             items.extend(sent.writes.into_iter().map(|(at, what, bytes)| Late::Write(at, what, bytes)));
         }
@@ -6732,9 +6757,11 @@ impl Host {
                 fail(format_args!("a submission sent ahead could not be followed by a signal ({e})"));
             }
             let back = declared_writes(runs);
-            let mut texture_back_ranges = Vec::new();
+            let mut landing_written = Vec::new();
             for list in runs {
-                texture_back_ranges.extend(list.deferred().texture_backs.iter().map(crate::texback::Back::range));
+                let deferred = list.deferred();
+                landing_written.extend(deferred.texture_backs.iter().map(crate::texback::Back::range));
+                landing_written.extend(deferred.placed_writes.iter().copied());
             }
             let writes = runs.iter().flat_map(|l| l.deferred().writes.clone()).collect();
             submission_us(0, (prepared - started).saturating_sub(settled).as_micros() as u64);
@@ -6745,7 +6772,7 @@ impl Host {
                 number: this_submission,
                 card,
                 back,
-                texture_back_ranges,
+                landing_written,
                 writes,
             };
             working(was_working);
@@ -7998,7 +8025,8 @@ impl HostList {
                 && deferred.textures.is_empty()
                 && deferred.writes.is_empty()
                 && deferred.backs.is_empty()
-                && deferred.texture_backs.is_empty())
+                && deferred.texture_backs.is_empty()
+                && deferred.placed_writes.is_empty())
             {
                 return false;
             }
@@ -8116,6 +8144,22 @@ impl HostList {
         deferred
             .copies
             .push(Step::GpuWrite(shadow.clone(), address, len));
+    }
+
+    /// The list's shaders may write title memory `[address, address + len)`
+    /// in place: no copy to keep or merge, only the range, so that what
+    /// waits on flights ([`late_blocked`], [`late_met`]) sees it written
+    /// until the list has run.
+    pub(crate) fn defer_placed_write(&self, address: usize, len: usize) {
+        if len == 0 {
+            return;
+        }
+        let mut deferred = self.deferred();
+        // Dispatches declare the same range thousands of times a frame.
+        if deferred.placed_writes.last() == Some(&(address, address + len)) {
+            return;
+        }
+        deferred.placed_writes.push((address, address + len));
     }
 
     /// A read back: once the list has run, `rows` rows of `row` bytes go

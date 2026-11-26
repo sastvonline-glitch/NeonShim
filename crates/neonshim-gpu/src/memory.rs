@@ -288,8 +288,10 @@ pub(crate) fn ready(
         }
     };
     for (n, shadow) in m.copies.iter().enumerate().skip(made as usize) {
-        let (_, len) = shadow.span();
-        heap.raw_uav_at(base + 1 + n as u32, &shadow.buffer, 0, len);
+        let (start, len) = shadow.span();
+        // From the copy's first byte: past the bias for memory in place,
+        // whose buffer begins on the 64 KiB page that holds `start`.
+        heap.raw_uav_at(base + 1 + n as u32, &shadow.buffer, shadow.offset(start), len);
     }
     m.heaps.insert(key, (base, m.copies.len() as u32));
     // Once per list, and for copies numbered since: the builder alone
