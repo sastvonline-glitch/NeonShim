@@ -3193,7 +3193,7 @@ fn blocked_by(written: &[(usize, usize)], runs: &[&HostList], count: bool) -> Op
                         // buffer of its own, four a frame, 43 to 60 ms a
                         // frame) and neither side had other bytes after
                         // one. A copy INTO such a range still waits.
-                        if !touches(written, dst, dst + len) && fill_ahead::on() {
+                        if !touches(written, dst, dst + len) && fill_ahead::on() && !fill_ahead::raced(src, len) {
                             if count {
                                 fill_ahead::read(src, len);
                             }
@@ -3210,8 +3210,9 @@ fn blocked_by(written: &[(usize, usize)], runs: &[&HostList], count: bool) -> Op
                 &Step::Fill(_, src, len) => {
                     if touches(written, src, src + len) {
                         // Not waited for, and checked when the flights land
-                        // (`fill_ahead`).
-                        if fill_ahead::on() {
+                        // (`fill_ahead`); where one such fill was caught
+                        // reading ahead of a flight, they wait.
+                        if fill_ahead::on() && !fill_ahead::raced(src, len) {
                             if count {
                                 fill_ahead::read(src, len);
                             }
@@ -3276,8 +3277,33 @@ mod fill_ahead {
     /// every present that waits).
     const KEEP: u64 = 16;
 
-    /// A flight changed bytes a fill had read ahead of it: fills wait.
+    /// A flight changed bytes a fill had read ahead of it in more than
+    /// [`RACED_MOST`] pieces: every fill waits.
     static WAIT: AtomicBool = AtomicBool::new(false);
+    /// The 64 KiB pieces where a flight changed bytes a fill had read ahead
+    /// of it: fills and copies that read there wait for the flights, the
+    /// others still do not. (Run of 2026-11-27: one such fill, 2 KB, turned
+    /// the waiting back on for every fill, and the frame with it.)
+    static RACED: Mutex<Vec<usize>> = Mutex::new(Vec::new());
+    /// Pieces kept apart before every fill waits again.
+    const RACED_MOST: usize = 64;
+    /// Fills and copies that waited since the last frame line because they
+    /// read a raced piece.
+    static RACED_WAITS: AtomicU64 = AtomicU64::new(0);
+
+    /// Whether `[src, src + len)` lies in a piece where a fill was caught
+    /// reading ahead of a flight.
+    pub(super) fn raced(src: usize, len: usize) -> bool {
+        let raced = RACED.lock().unwrap_or_else(|e| e.into_inner());
+        if raced.is_empty() || len == 0 {
+            return false;
+        }
+        let hit = (src / PIECE..=(src + len - 1) / PIECE).any(|piece| raced.contains(&piece));
+        if hit {
+            RACED_WAITS.fetch_add(1, Relaxed);
+        }
+        hit
+    }
     /// Since the last frame line: fills that read ahead; landings' writes
     /// that touched one's piece. Since the start: fills that read bytes a
     /// flight then changed.
@@ -3366,16 +3392,32 @@ mod fill_ahead {
             }
             let n = COUNT[2].fetch_add(1, Relaxed) + 1;
             let first = now.iter().zip(&new[a - at..b - at]).position(|(x, y)| x != y).unwrap_or(0);
-            if !WAIT.swap(true, Relaxed) {
+            // Its pieces are kept apart: fills there wait from now on.
+            let pieces = {
+                let mut raced = RACED.lock().unwrap_or_else(|e| e.into_inner());
+                for piece in from / PIECE..=(to - 1) / PIECE {
+                    if !raced.contains(&piece) {
+                        raced.push(piece);
+                    }
+                }
+                raced.len()
+            };
+            if pieces > RACED_MOST {
+                if !WAIT.swap(true, Relaxed) {
+                    tracing::warn!(
+                        "fills were caught reading ahead of flights in {pieces} pieces of 64 KiB: every fill waits for flights \
+                         again from here on, as with NEONSHIM_FILL_WAIT=1 ({n} such fills)"
+                    );
+                }
+            } else if n <= 16 {
                 tracing::warn!(
                     "a fill of upload memory read {} bytes at {from:#x} in frame {read_in} ahead of a flight whose shaders changed \
                      them (first at {:#x}, landed in frame {frame}): the lists of that submission drew with the bytes from before. \
-                     Fills wait for flights again from here on, as with NEONSHIM_FILL_WAIT=1 ({n} such fills)",
+                     Fills that read there wait for flights from here on ({pieces} such pieces of 64 KiB, {n} such fills)",
                     to - from,
                     a + first
                 );
             }
-            return;
         }
     }
 
@@ -3399,11 +3441,14 @@ mod fill_ahead {
         tracing::info!(
             "fills of upload memory that read title memory flights may write, not waited for (NEONSHIM_FILL_WAIT=1 waits): {:.1} per \
              frame; {:.1} landings' writes per frame fell in the same 64 KiB as one and were compared with it; fills that read \
-             bytes a flight then changed, since the start: {}{}; {kept} fills kept to check",
+             bytes a flight then changed, since the start: {}{}; {kept} fills kept to check; {} pieces of 64 KiB where they wait, \
+             {:.1} looks per frame found a fill or copy there",
             ahead as f64 / frames,
             looked as f64 / frames,
             COUNT[2].load(Relaxed),
-            if WAIT.load(Relaxed) { " (fills wait again)" } else { "" }
+            if WAIT.load(Relaxed) { " (fills wait again)" } else { "" },
+            RACED.lock().unwrap_or_else(|e| e.into_inner()).len(),
+            RACED_WAITS.swap(0, Relaxed) as f64 / frames
         );
     }
 }
