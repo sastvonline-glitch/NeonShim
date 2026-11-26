@@ -318,6 +318,29 @@ pub(crate) fn wrote_own(page: usize, others: &[usize]) -> (u64, u64) {
     (before, now)
 }
 
+/// The card wrote title memory `[at, at + len)` itself (memory in place,
+/// [`crate::inplace`]), and its flight has landed. Write watching does not
+/// see the card's writes (the in-place probe: 0 of 16 pages), so the
+/// journal is told here, as for [`wrote_own`]: the pages count as written
+/// at a new asking, and every other host copy that holds them takes them
+/// at its next refresh.
+pub(crate) fn card_wrote(at: usize, len: usize) {
+    if len == 0 {
+        return;
+    }
+    let mut j = JOURNAL.lock().unwrap_or_else(|e| e.into_inner());
+    let j = &mut *j;
+    j.asked += 1;
+    let now = j.asked;
+    // As in [`wrote_own`].
+    if j.kept || !j.ahead.is_empty() {
+        j.ahead_asked = now;
+    }
+    for page in at / PAGE..at.saturating_add(len).div_ceil(PAGE) {
+        j.written.insert(page, now);
+    }
+}
+
 /// The asking that last found the 64 KiB page numbered `page` written (0:
 /// never). Read only, for `crate::backreads`.
 #[cfg(feature = "diagnostics")]
@@ -1908,6 +1931,27 @@ mod tests {
         MEM_COMMIT, MEM_RELEASE, MEM_RESERVE, PAGE_READWRITE, VirtualAlloc, VirtualFree,
     };
     const MEM_WRITE_WATCH: u32 = 0x20_0000;
+
+    /// What the card wrote in place counts as written: every 64 KiB page the
+    /// range touches gets a new asking, later than any before it, and the
+    /// pages around it are left as they were.
+    #[test]
+    fn the_cards_writes_in_place_are_journaled() {
+        // Pages no other test uses.
+        let at = 0x7f3c_0000_0000usize + 0x1_8000;
+        let (first, last) = (at / PAGE, (at + 0x2_0000).div_ceil(PAGE));
+        let stamp = |page: usize| JOURNAL.lock().unwrap_or_else(|e| e.into_inner()).written.get(&page).copied();
+        assert_eq!(stamp(first - 1), None);
+        card_wrote(at, 0);
+        assert_eq!(stamp(first), None, "nothing written, nothing journaled");
+        let before = JOURNAL.lock().unwrap_or_else(|e| e.into_inner()).asked;
+        card_wrote(at, 0x2_0000);
+        let stamps: Vec<_> = (first..last).map(stamp).collect();
+        assert_eq!(stamps.len(), 3, "0x18000 + 128 KiB spans three pages");
+        assert!(stamps.iter().all(|s| s.is_some_and(|s| s > before)), "{stamps:?} after {before}");
+        assert_eq!(stamp(first - 1), None);
+        assert_eq!(stamp(last), None);
+    }
 
     #[test]
     fn written_pages_are_reported_to_every_asker() {

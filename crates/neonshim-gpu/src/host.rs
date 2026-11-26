@@ -3024,6 +3024,8 @@ struct Sent {
     /// Title-memory ranges the card writes with nothing of ours to merge:
     /// shader textures copied back, and memory in place its shaders write.
     landing_written: Vec<(usize, usize)>,
+    /// Of those, memory in place: the journal is told at landing.
+    placed_written: Vec<(usize, usize)>,
     /// Its bottom-of-pipe writes.
     writes: Vec<(usize, crate::queue::Written, usize)>,
 }
@@ -3040,9 +3042,13 @@ struct Flight {
     card: Option<CardPlan>,
     back: Vec<Declared>,
     landing_written: Vec<(usize, usize)>,
+    placed_written: Vec<(usize, usize)>,
 }
 
 /// One thing in the line of what waits for the card, in order.
+// A flight is much larger than a write or a signal; the line holds a few
+// of them at a time, so boxing would only add an allocation per flight.
+#[allow(clippy::large_enum_variant)]
 enum Late {
     Run(Flight),
     /// A bottom-of-pipe write of the flight before it: address, what, bytes.
@@ -6115,6 +6121,10 @@ impl Host {
                     if let Some(card) = flight.card {
                         self.card_done(card);
                     }
+                    // Memory in place its shaders wrote: other copies are told.
+                    for &(from, to) in &flight.placed_written {
+                        crate::watch::card_wrote(from, to - from);
+                    }
                     landed.push((flight.lists, flight.order));
                     backs.extend(flight.back);
                 }
@@ -6385,6 +6395,7 @@ impl Host {
                 card: sent.card,
                 back: sent.back,
                 landing_written: sent.landing_written,
+                placed_written: sent.placed_written,
             }));
             items.extend(sent.writes.into_iter().map(|(at, what, bytes)| Late::Write(at, what, bytes)));
             *flying >= late_most()
@@ -6436,6 +6447,7 @@ impl Host {
                 card: sent.card,
                 back: sent.back,
                 landing_written: sent.landing_written,
+                placed_written: sent.placed_written,
             }));
             items.extend(sent.writes.into_iter().map(|(at, what, bytes)| Late::Write(at, what, bytes)));
         }
@@ -6573,6 +6585,10 @@ impl Host {
                         }
                         if let Some(card) = flight.card {
                             self.card_done(card);
+                        }
+                        // Memory in place its shaders wrote: other copies are told.
+                        for &(from, to) in &flight.placed_written {
+                            crate::watch::card_wrote(from, to - from);
                         }
                         landed.push((flight.lists, flight.order));
                     }
@@ -6758,10 +6774,12 @@ impl Host {
             }
             let back = declared_writes(runs);
             let mut landing_written = Vec::new();
+            let mut placed_written = Vec::new();
             for list in runs {
                 let deferred = list.deferred();
                 landing_written.extend(deferred.texture_backs.iter().map(crate::texback::Back::range));
                 landing_written.extend(deferred.placed_writes.iter().copied());
+                placed_written.extend(deferred.placed_writes.iter().copied());
             }
             let writes = runs.iter().flat_map(|l| l.deferred().writes.clone()).collect();
             submission_us(0, (prepared - started).saturating_sub(settled).as_micros() as u64);
@@ -6773,6 +6791,7 @@ impl Host {
                 card,
                 back,
                 landing_written,
+                placed_written,
                 writes,
             };
             working(was_working);
@@ -6886,6 +6905,12 @@ impl Host {
         hand_back(&back);
         if let Some(card) = card {
             self.card_done(card);
+        }
+        // Memory in place the shaders wrote: other copies of it are told.
+        for list in runs {
+            for &(from, to) in &list.deferred().placed_writes {
+                crate::watch::card_wrote(from, to - from);
+            }
         }
         #[cfg(feature = "diagnostics")]
         if !back.is_empty() {
