@@ -154,7 +154,7 @@ mod tests {
             EvtSubscribe(0, std::ptr::null_mut(), channel.as_ptr(), query.as_ptr(), 0, std::ptr::null(), Some(got), EvtSubscribeToFutureEvents)
         };
         assert_ne!(subscription, 0, "{}", std::io::Error::last_os_error());
-        let (name, text) = (wide("neonshim-drvwatch-test"), wide("a test entry of the VIctory layer's driver watch"));
+        let (name, text) = (wide("neonshim-drvwatch-test"), wide("a test entry of NeonShim's driver watch"));
         // SAFETY: a source of our own name, one string, no data.
         unsafe {
             let source = RegisterEventSourceW(std::ptr::null(), name.as_ptr());

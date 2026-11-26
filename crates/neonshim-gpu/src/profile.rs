@@ -2352,7 +2352,7 @@ impl Sampler {
         let mut folded = String::new();
         let mut summaries = Vec::new();
         let w = &mut text;
-        let _ = writeln!(w, "VIctory profile, process {}", std::process::id());
+        let _ = writeln!(w, "NeonShim profile, process {}", std::process::id());
         let _ = writeln!(
             w,
             "sampled {seconds:.1} s in {} looks ({} asked a second, {:.2} ms between looks, {} late); \

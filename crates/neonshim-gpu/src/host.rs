@@ -10348,7 +10348,7 @@ extern "system" fn window_proc(
 }
 
 fn make_window(width: u32, height: u32) -> windows::core::Result<HWND> {
-    const CLASS: PCWSTR = w!("VIctory");
+    const CLASS: PCWSTR = w!("NeonShim");
     // SAFETY: registers our class once and creates a window of it.
     unsafe {
         let instance = GetModuleHandleW(None)?;

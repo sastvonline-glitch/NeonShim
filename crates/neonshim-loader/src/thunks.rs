@@ -65,7 +65,7 @@ extern "system" fn unimplemented_import(site: &'static ImportSite) -> u64 {
             // Into the crash log too: `abort` ends the process without
             // running the handlers that write it.
             let (dll, symbol) = (&site.dll, &site.symbol);
-            let text = format!("VItoriaBr: unimplemented import {dll}!{symbol} called");
+            let text = format!("NeonShim: unimplemented import {dll}!{symbol} called");
             crate::log_crash(&text);
             // SAFETY: plain Win32 calls without preconditions.
             unsafe {
@@ -181,7 +181,7 @@ mod tests {
             .unwrap();
         assert!(!out.status.success(), "the trap ends the process");
         let text = std::fs::read_to_string(&log).unwrap_or_default();
-        let named = text.contains("VItoriaBr: unimplemented import probe.dll!Missing called");
+        let named = text.contains("NeonShim: unimplemented import probe.dll!Missing called");
         assert!(named, "crash log: {text:?}");
     }
 }

@@ -53,7 +53,7 @@ pub fn log_crashes_to(file: std::path::PathBuf) {
         std::panic::set_hook(Box::new(move |info| {
             print(info);
             append_to_log(&format!(
-                "VItoriaBr: panic on thread {:?}: {info}\n{}",
+                "NeonShim: panic on thread {:?}: {info}\n{}",
                 std::thread::current().name().unwrap_or("?"),
                 title_output()
             ));
@@ -480,7 +480,7 @@ unsafe fn report(what: &str, info: *const EXCEPTION_POINTERS, to_file: bool) {
         text.push('\n');
     };
     line(format!(
-        "VItoriaBr: {what} {:#010x} at {}{detail}",
+        "NeonShim: {what} {:#010x} at {}{detail}",
         code as u32,
         locate(at)
     ));

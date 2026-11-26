@@ -29,7 +29,7 @@ extern "system" fn create_device(
 #[cfg(windows)]
 fn host_gpu_failed(what: &str) -> ! {
     use windows_sys::Win32::System::Threading::{GetCurrentProcess, TerminateProcess};
-    neonshim_loader::log_crash(&format!("VItoriaBr: host GPU failure: {what}"));
+    neonshim_loader::log_crash(&format!("NeonShim: host GPU failure: {what}"));
     const DXGI_ERROR_DEVICE_REMOVED: u32 = 0x887A_0005;
     // SAFETY: ends our own process.
     unsafe { TerminateProcess(GetCurrentProcess(), DXGI_ERROR_DEVICE_REMOVED) };
