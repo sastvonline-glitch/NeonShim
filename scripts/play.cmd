@@ -55,7 +55,8 @@ set NEONSHIM_PIPELINE_NORMAL=1
 rem the title's GPU heap defrag shader left coloured blocks and stale textures
 set NEONSHIM_SKIP_PIPELINES=02384a60fda6f2d0
 rem --- picture ---
-set NEONSHIM_DISPLAY_MODE=1280x720
+rem the mode the title renders for; set it before running to override (e.g. 640x360)
+if not defined NEONSHIM_DISPLAY_MODE set NEONSHIM_DISPLAY_MODE=1280x720
 rem constant indirect light where the ray-traced light doesn't run yet
 set NEONSHIM_AMBIENT=0.6
 rem water textures copied back, so boats float
