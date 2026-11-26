@@ -3294,8 +3294,25 @@ mod fill_ahead {
     /// Whether `[src, src + len)` lies in a piece where a fill was caught
     /// reading ahead of a flight.
     pub(super) fn raced(src: usize, len: usize) -> bool {
+        if len == 0 {
+            return false;
+        }
+        // Pages the card's shaders changed lately: a fill there waits,
+        // before any race is caught (run of 2026-11-27: two fills read the
+        // same piece ahead of flights before the first catch could keep
+        // them waiting, and the device went nine seconds later).
+        {
+            let frame = crate::frame::current();
+            let hot = HOT.lock().unwrap_or_else(|e| e.into_inner());
+            if let Some(hot) = hot.as_ref()
+                && (src / HOT_PAGE..=(src + len - 1) / HOT_PAGE).any(|page| hot.get(&page).is_some_and(|&f| f + HOT_KEEP >= frame))
+            {
+                HOT_WAITS.fetch_add(1, Relaxed);
+                return true;
+            }
+        }
         let raced = RACED.lock().unwrap_or_else(|e| e.into_inner());
-        if raced.is_empty() || len == 0 {
+        if raced.is_empty() {
             return false;
         }
         let hit = (src / PIECE..=(src + len - 1) / PIECE).any(|piece| raced.contains(&piece));
@@ -3303,6 +3320,26 @@ mod fill_ahead {
             RACED_WAITS.fetch_add(1, Relaxed);
         }
         hit
+    }
+
+    /// The unit pages the card wrote are kept by, and for how many frames.
+    const HOT_PAGE: usize = 4096;
+    const HOT_KEEP: u64 = 120;
+    /// Pages (by number) the card's shaders changed, with the frame they
+    /// last landed in.
+    static HOT: Mutex<Option<HashMap<usize, u64>>> = Mutex::new(None);
+    /// Looks since the last frame line that found a fill or copy in a hot
+    /// page.
+    static HOT_WAITS: AtomicU64 = AtomicU64::new(0);
+
+    /// Notes that a landing changed `[at, at + len)`.
+    fn heat(at: usize, len: usize) {
+        let frame = crate::frame::current();
+        let mut hot = HOT.lock().unwrap_or_else(|e| e.into_inner());
+        let hot = hot.get_or_insert_with(HashMap::new);
+        for page in at / HOT_PAGE..=(at + len - 1) / HOT_PAGE {
+            hot.insert(page, frame);
+        }
     }
     /// Since the last frame line: fills that read ahead; landings' writes
     /// that touched one's piece. Since the start: fills that read bytes a
@@ -3363,6 +3400,7 @@ mod fill_ahead {
         if new.is_empty() || WAIT.load(Relaxed) {
             return;
         }
+        heat(at, new.len());
         let frame = crate::frame::current();
         let landing = LANDING.load(Relaxed);
         let hits: Vec<(usize, usize, u64)> = {
@@ -3438,17 +3476,28 @@ mod fill_ahead {
                 map.values().map(|p| p.fills.len()).sum::<usize>()
             })
         };
+        let hot = {
+            let frame = crate::frame::current();
+            let mut hot = HOT.lock().unwrap_or_else(|e| e.into_inner());
+            hot.as_mut().map_or(0, |hot| {
+                hot.retain(|_, f| *f + HOT_KEEP >= frame);
+                hot.len()
+            })
+        };
         tracing::info!(
             "fills of upload memory that read title memory flights may write, not waited for (NEONSHIM_FILL_WAIT=1 waits): {:.1} per \
              frame; {:.1} landings' writes per frame fell in the same 64 KiB as one and were compared with it; fills that read \
              bytes a flight then changed, since the start: {}{}; {kept} fills kept to check; {} pieces of 64 KiB where they wait, \
-             {:.1} looks per frame found a fill or copy there",
+             {:.1} looks per frame found a fill or copy there; {} pages of 4 KiB the card changed in the last {HOT_KEEP} frames, \
+             {:.1} looks per frame found a fill or copy in one",
             ahead as f64 / frames,
             looked as f64 / frames,
             COUNT[2].load(Relaxed),
             if WAIT.load(Relaxed) { " (fills wait again)" } else { "" },
             RACED.lock().unwrap_or_else(|e| e.into_inner()).len(),
-            RACED_WAITS.swap(0, Relaxed) as f64 / frames
+            RACED_WAITS.swap(0, Relaxed) as f64 / frames,
+            hot,
+            HOT_WAITS.swap(0, Relaxed) as f64 / frames
         );
     }
 }
