@@ -136,12 +136,19 @@ fn hide(parent: HWND, ex_style: u32, x: i32, y: i32) -> (u32, i32, i32) {
 /// A top-level window larger than the work area is shrunk to fit, keeping
 /// its proportions, and centred; what it shows is scaled to it (the swap
 /// chain stretches).
+///
+/// `NEONSHIM_WINDOW_SIZE=<w>x<h>` caps the window further, for a window
+/// smaller than the screen (the picture is scaled the same way).
 fn fit(parent: HWND, x: i32, y: i32, width: i32, height: i32) -> (i32, i32, i32, i32) {
     let mut area = RECT::default();
     // SAFETY: `area` receives the primary monitor's work area.
     let known =
         unsafe { wm::SystemParametersInfoW(wm::SPI_GETWORKAREA, 0, (&raw mut area).cast(), 0) };
     let fitted = fit_into(&area, width, height);
+    let fitted = match window_cap() {
+        Some((w, h)) => fit_into(&RECT { left: 0, top: 0, right: w, bottom: h }, fitted.0, fitted.1),
+        None => fitted,
+    };
     if !parent.is_null() || known == 0 || fitted == (width, height) {
         return (x, y, width, height);
     }
@@ -150,6 +157,16 @@ fn fit(parent: HWND, x: i32, y: i32, width: i32, height: i32) -> (i32, i32, i32,
     let left = area.left + (area.right - area.left - w) / 2;
     let top = area.top + (area.bottom - area.top - h) / 2;
     (left, top, w, h)
+}
+
+/// `NEONSHIM_WINDOW_SIZE`, if set to `<w>x<h>`.
+fn window_cap() -> Option<(i32, i32)> {
+    static CAP: std::sync::LazyLock<Option<(i32, i32)>> = std::sync::LazyLock::new(|| {
+        let v = std::env::var("NEONSHIM_WINDOW_SIZE").ok()?;
+        let (w, h) = v.trim().split_once(['x', 'X'])?;
+        Some((w.trim().parse().ok()?, h.trim().parse().ok()?)).filter(|&(w, h)| w > 0 && h > 0)
+    });
+    *CAP
 }
 
 /// `width` x `height` scaled down to fit `area`, or unchanged if it fits

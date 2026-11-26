@@ -2,17 +2,21 @@
 rem NeonShim launcher, NVIDIA preset (tested on an RTX 3080 Ti, Windows 10).
 rem
 rem   scripts\play.cmd               run the title
-rem   scripts\play.cmd warm          translate every shader into the cache first (do this once)
+rem   scripts\play.cmd warm          translate every shader and build its pipelines first (once per build)
 rem   scripts\play.cmd old-sampler   run with the old indexed sampler range, to compare
 rem
 rem The game folder comes from neonshim.cfg next to this repo's root (not committed):
 rem   GAME=D:\path\to\your\copy
 rem   EXE=name_of_the_exe.exe        (optional; the first .exe in GAME otherwise)
+rem   CONSOLE=series-s               (optional; series-x by default)
 cd /d "%~dp0.."
 if exist neonshim.cfg for /f "usebackq tokens=1,* delims==" %%a in ("neonshim.cfg") do (
   if /i "%%a"=="GAME" set "GAME=%%b"
   if /i "%%a"=="EXE" set "EXE_NAME=%%b"
+  if /i "%%a"=="CONSOLE" set "CONSOLE=%%b"
 )
+rem series-x (default) or series-s
+if "%CONSOLE%"=="" set "CONSOLE=series-x"
 if "%GAME%"=="" ( echo Set GAME=^<your game folder^> in neonshim.cfg & exit /b 1 )
 if not exist target\release\neonshim.exe ( echo Build first: cargo build --release -p neonshim ^&^& cargo xtask agility & exit /b 1 )
 
@@ -57,6 +61,8 @@ set NEONSHIM_SKIP_PIPELINES=02384a60fda6f2d0
 rem --- picture ---
 rem the mode the title renders for; set it before running to override (e.g. 640x360)
 if not defined NEONSHIM_DISPLAY_MODE set NEONSHIM_DISPLAY_MODE=1280x720
+rem the largest the window may be; the picture is scaled to it
+if not defined NEONSHIM_WINDOW_SIZE set NEONSHIM_WINDOW_SIZE=1280x720
 rem constant indirect light where the ray-traced light doesn't run yet
 set NEONSHIM_AMBIENT=0.6
 rem water textures copied back, so boats float
@@ -72,6 +78,8 @@ if /i "%1"=="warm" (
   set NEONSHIM_HOST_WAVE=32
   set NEONSHIM_VIEW_LIMIT=999999
   target\release\neonshim.exe warm --jobs 16 "%GAME%\shaders.rpf"
+  rem and the driver's pipelines, so the first session doesn't build ~700 of them while it plays
+  target\release\neonshim.exe translate --pipelines --list --jobs 16 "%GAME%\shaders.rpf"
   goto :eof
 )
 if /i "%1"=="old-sampler" (
@@ -85,6 +93,6 @@ if /i "%1"=="old-sampler" set "TAG=old-sampler"
 if not exist logs mkdir logs
 set "LOG=logs\%TAG%-%TS%.log"
 echo Running. Log: %LOG%
-target\release\neonshim.exe run "%EXE%" --execute > "%LOG%" 2>&1
+target\release\neonshim.exe run "%EXE%" --execute --console %CONSOLE% > "%LOG%" 2>&1
 echo Game exited. Summary:
 python scripts\fps-report.py "%LOG%"
