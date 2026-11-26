@@ -8678,7 +8678,24 @@ impl HostList {
         // done, in the order recorded.
         let mut fills: Vec<(usize, usize, usize)> = Vec::new();
         let wide = wide_fill();
+        // Texture refreshes in a row (`wide_textures`): gathered and run
+        // together on several threads before the next step that writes
+        // title memory or runs work of its own, and at the end.
+        let mut textures: Vec<std::sync::Arc<crate::texture::Staging>> = Vec::new();
+        let wide_tex = wide_textures();
         for step in &self.deferred().copies {
+            if wide_tex {
+                match step {
+                    Step::Texture(staging) => {
+                        if batch.texture_due(staging) {
+                            textures.push(staging.clone());
+                        }
+                        continue;
+                    }
+                    Step::Copy(..) | Step::Run(_) | Step::Host(_) => run_textures(&mut textures),
+                    Step::Fill(..) | Step::Refresh(..) | Step::GpuWrite(..) => {}
+                }
+            }
             if wide {
                 if let &Step::Fill(dst, src, len) = step {
                     #[cfg(feature = "diagnostics")]
@@ -8776,7 +8793,55 @@ impl HostList {
             preparing(1, copied as u64);
         }
         run_fills(&mut fills);
+        run_textures(&mut textures);
     }
+}
+
+/// Whether a submission's texture refreshes in a row are run on several
+/// threads (`NEONSHIM_WIDE_TEXTURES=0` turns it off; on by default).
+///
+/// In 3D scenes the submitting thread spent 130-420 ms a frame refreshing
+/// textures one after the other (the frame-time line's "textures: refresh",
+/// 150-440 uploads a frame, batch10 runs of 26.11.2026), most of the
+/// submission's "lists' steps", while the card stood idle behind it. Each
+/// refresh reads title memory and writes its own staging buffer under its
+/// own lock (the heap worker already refreshes stagings beside the
+/// submitting thread), so refreshes of different textures do not depend on
+/// one another. A step that writes title memory (a title buffer copy, a
+/// `Run`) or runs work of ours (`Host`) waits until the refreshes recorded
+/// before it are done, so each refresh still reads what it read in order.
+fn wide_textures() -> bool {
+    static ON: OnceLock<bool> = OnceLock::new();
+    *ON.get_or_init(|| {
+        let on = std::env::var_os("NEONSHIM_WIDE_TEXTURES").is_none_or(|v| v != "0");
+        if on {
+            tracing::info!(
+                "a submission's texture refreshes in a row run on several threads (NEONSHIM_WIDE_TEXTURES=0 turns it off)"
+            );
+        }
+        on
+    })
+}
+
+/// Texture refreshes taken in a row ([`wide_textures`]), done before the
+/// next step: on the kept threads and this one when there are two or more,
+/// the largest first so that the threads end together. The frame line's
+/// "textures" then sums the threads' time.
+fn run_textures(textures: &mut Vec<std::sync::Arc<crate::texture::Staging>>) {
+    if textures.is_empty() {
+        return;
+    }
+    let mut textures = std::mem::take(textures);
+    if textures.len() == 1 {
+        textures[0].refresh();
+        return;
+    }
+    textures.sort_by_key(|t| std::cmp::Reverse(t.memory().1));
+    let jobs: Vec<Box<dyn FnOnce() + Send>> = textures
+        .into_iter()
+        .map(|t| Box::new(move || t.refresh()) as Box<dyn FnOnce() + Send>)
+        .collect();
+    crate::shadow::wide_run(jobs);
 }
 
 /// Whether a submission's fills in a row (title memory into the list's
