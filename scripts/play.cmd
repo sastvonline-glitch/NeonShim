@@ -21,62 +21,62 @@ if "%GAME%"=="" ( echo Set GAME=^<your game folder^> in neonshim.cfg & exit /b 1
 if not exist target\release\neonshim.exe ( echo Build first: cargo build --release -p neonshim ^&^& cargo xtask agility & exit /b 1 )
 
 rem --- submission and waits ---
-set NEONSHIM_ASYNC_SUBMIT=1
-set NEONSHIM_QUEUE2=1
-set NEONSHIM_INDIRECT_WINDOW=1
-set NEONSHIM_LATE_WAIT=3
-set NEONSHIM_WIDE_BACK=1
-set NEONSHIM_MERGE_RUNS=4096
+if not defined NEONSHIM_ASYNC_SUBMIT set NEONSHIM_ASYNC_SUBMIT=1
+if not defined NEONSHIM_QUEUE2 set NEONSHIM_QUEUE2=1
+if not defined NEONSHIM_INDIRECT_WINDOW set NEONSHIM_INDIRECT_WINDOW=1
+if not defined NEONSHIM_LATE_WAIT set NEONSHIM_LATE_WAIT=3
+if not defined NEONSHIM_WIDE_BACK set NEONSHIM_WIDE_BACK=1
+if not defined NEONSHIM_MERGE_RUNS set NEONSHIM_MERGE_RUNS=4096
 rem a texture refresh waits for the runtime's remapping (1 gave rainbow, pixelated skin)
-set NEONSHIM_TEXTURE_NO_WAIT=0
+if not defined NEONSHIM_TEXTURE_NO_WAIT set NEONSHIM_TEXTURE_NO_WAIT=0
 rem --- memory on a 12 GB card ---
-set NEONSHIM_CARD_ROOM_FOR_TARGETS_MB=2048
-set NEONSHIM_TEXTURE_STAGE_MB=128
-set NEONSHIM_LEVELS_ON_DEMAND=1
-set NEONSHIM_DYNAMIC_SLOTS=524288
+if not defined NEONSHIM_CARD_ROOM_FOR_TARGETS_MB set NEONSHIM_CARD_ROOM_FOR_TARGETS_MB=2048
+if not defined NEONSHIM_TEXTURE_STAGE_MB set NEONSHIM_TEXTURE_STAGE_MB=128
+if not defined NEONSHIM_LEVELS_ON_DEMAND set NEONSHIM_LEVELS_ON_DEMAND=1
+if not defined NEONSHIM_DYNAMIC_SLOTS set NEONSHIM_DYNAMIC_SLOTS=524288
 rem --- copies ---
-set NEONSHIM_WIDE_REFRESH=1
-set NEONSHIM_WIDE_MERGE=1
-set NEONSHIM_JOIN_COPIES=1
-set NEONSHIM_COPY_PLAIN=1
-set NEONSHIM_JOIN_PARTS=1
-set NEONSHIM_BACK_OWN_VIEW=1
-set NEONSHIM_INDIRECT_GATHER=1
-set NEONSHIM_WIDE_FILL=1
-set NEONSHIM_WIDE_HEAP=1
-set NEONSHIM_PAGE_WRITES=slots
-set NEONSHIM_TABLE_BUFFERS=1
-set NEONSHIM_UNWATCHED_FRAMES=4
-set NEONSHIM_FILL_WAIT=1
-set NEONSHIM_LOOKUP_CACHE=1
-set NEONSHIM_CARD_HASH_LEN=1
-set NEONSHIM_CARD_BUFFERS_MIN_KB=64
-set NEONSHIM_CARD_BUFFERS_MB=1280
-set NEONSHIM_HEAP_WORKER=1
+if not defined NEONSHIM_WIDE_REFRESH set NEONSHIM_WIDE_REFRESH=1
+if not defined NEONSHIM_WIDE_MERGE set NEONSHIM_WIDE_MERGE=1
+if not defined NEONSHIM_JOIN_COPIES set NEONSHIM_JOIN_COPIES=1
+if not defined NEONSHIM_COPY_PLAIN set NEONSHIM_COPY_PLAIN=1
+if not defined NEONSHIM_JOIN_PARTS set NEONSHIM_JOIN_PARTS=1
+if not defined NEONSHIM_BACK_OWN_VIEW set NEONSHIM_BACK_OWN_VIEW=1
+if not defined NEONSHIM_INDIRECT_GATHER set NEONSHIM_INDIRECT_GATHER=1
+if not defined NEONSHIM_WIDE_FILL set NEONSHIM_WIDE_FILL=1
+if not defined NEONSHIM_WIDE_HEAP set NEONSHIM_WIDE_HEAP=1
+if not defined NEONSHIM_PAGE_WRITES set NEONSHIM_PAGE_WRITES=slots
+if not defined NEONSHIM_TABLE_BUFFERS set NEONSHIM_TABLE_BUFFERS=1
+if not defined NEONSHIM_UNWATCHED_FRAMES set NEONSHIM_UNWATCHED_FRAMES=4
+if not defined NEONSHIM_FILL_WAIT set NEONSHIM_FILL_WAIT=1
+if not defined NEONSHIM_LOOKUP_CACHE set NEONSHIM_LOOKUP_CACHE=1
+if not defined NEONSHIM_CARD_HASH_LEN set NEONSHIM_CARD_HASH_LEN=1
+if not defined NEONSHIM_CARD_BUFFERS_MIN_KB set NEONSHIM_CARD_BUFFERS_MIN_KB=64
+if not defined NEONSHIM_CARD_BUFFERS_MB set NEONSHIM_CARD_BUFFERS_MB=1280
+if not defined NEONSHIM_HEAP_WORKER set NEONSHIM_HEAP_WORKER=1
 rem --- pipelines ---
-set NEONSHIM_PIPELINE_WORKERS=12
-set NEONSHIM_PIPELINE_NORMAL=1
+if not defined NEONSHIM_PIPELINE_WORKERS set NEONSHIM_PIPELINE_WORKERS=12
+if not defined NEONSHIM_PIPELINE_NORMAL set NEONSHIM_PIPELINE_NORMAL=1
 rem the title's GPU heap defrag shader left coloured blocks and stale textures
-set NEONSHIM_SKIP_PIPELINES=02384a60fda6f2d0
+if not defined NEONSHIM_SKIP_PIPELINES set NEONSHIM_SKIP_PIPELINES=02384a60fda6f2d0
 rem --- picture ---
 rem the mode the title renders for; set it before running to override (e.g. 640x360)
 if not defined NEONSHIM_DISPLAY_MODE set NEONSHIM_DISPLAY_MODE=1280x720
 rem the largest the window may be; the picture is scaled to it
 if not defined NEONSHIM_WINDOW_SIZE set NEONSHIM_WINDOW_SIZE=1280x720
 rem constant indirect light where the ray-traced light doesn't run yet
-set NEONSHIM_AMBIENT=0.6
+if not defined NEONSHIM_AMBIENT set NEONSHIM_AMBIENT=0.6
 rem water textures copied back, so boats float
-set NEONSHIM_TEXTURE_BACK=1
+if not defined NEONSHIM_TEXTURE_BACK set NEONSHIM_TEXTURE_BACK=1
 rem rays that miss with no structure built get sky light, not black
-set NEONSHIM_BVH_MISS=1
-set NEONSHIM_NAN_SCRUB=1
+if not defined NEONSHIM_BVH_MISS set NEONSHIM_BVH_MISS=1
+if not defined NEONSHIM_NAN_SCRUB set NEONSHIM_NAN_SCRUB=1
 rem --- log: frame times, copies, waits ---
-set NEONSHIM_FRAME_LOG=1
-set NEONSHIM_WRITE_STATS=1
+if not defined NEONSHIM_FRAME_LOG set NEONSHIM_FRAME_LOG=1
+if not defined NEONSHIM_WRITE_STATS set NEONSHIM_WRITE_STATS=1
 if /i "%1"=="warm" (
   rem warm-up keys must match the device: 32-lane waves, NVIDIA view heap cap
-  set NEONSHIM_HOST_WAVE=32
-  set NEONSHIM_VIEW_LIMIT=999999
+  if not defined NEONSHIM_HOST_WAVE set NEONSHIM_HOST_WAVE=32
+  if not defined NEONSHIM_VIEW_LIMIT set NEONSHIM_VIEW_LIMIT=999999
   target\release\neonshim.exe warm --jobs 16 "%GAME%\shaders.rpf"
   rem and the driver's pipelines, so the first session doesn't build ~700 of them while it plays
   target\release\neonshim.exe translate --pipelines --list --jobs 16 "%GAME%\shaders.rpf"
