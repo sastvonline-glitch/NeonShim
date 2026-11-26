@@ -189,6 +189,12 @@ pub fn title_memory_freeing(at: usize, len: usize) {
     STATS[7].fetch_add(gone, Ordering::Relaxed);
 }
 
+/// Whether any title memory is in place now: while some is, a title's
+/// `VirtualFree` there can fail until the heap over it goes.
+pub fn title_memory_in_place() -> bool {
+    STATS[0].load(Ordering::Relaxed) + STATS[2].load(Ordering::Relaxed) != 0
+}
+
 /// The line of what is in place, every ten seconds while [`level`] is on.
 fn say() {
     static LAST: AtomicU64 = AtomicU64::new(0);

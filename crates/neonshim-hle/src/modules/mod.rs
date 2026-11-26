@@ -25,6 +25,8 @@ pub mod lifecycle;
 #[cfg(windows)]
 pub mod media;
 #[cfg(windows)]
+pub mod memory;
+#[cfg(windows)]
 pub mod net;
 pub mod speech;
 pub mod storage;
@@ -66,6 +68,8 @@ pub(crate) fn all() -> Vec<HleModule> {
     all.push(lifecycle::module());
     #[cfg(windows)]
     all.push(net::module());
+    #[cfg(windows)]
+    all.push(memory::module());
     #[cfg(windows)]
     all.push(xmem::module());
     #[cfg(windows)]
