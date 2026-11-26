@@ -18,7 +18,9 @@ if exist neonshim.cfg for /f "usebackq tokens=1,* delims==" %%a in ("neonshim.cf
 rem series-x (default) or series-s
 if "%CONSOLE%"=="" set "CONSOLE=series-x"
 if "%GAME%"=="" ( echo Set GAME=^<your game folder^> in neonshim.cfg & exit /b 1 )
-if not exist target\release\neonshim.exe ( echo Build first: cargo build --release -p neonshim ^&^& cargo xtask agility & exit /b 1 )
+rem NEONSHIM_EXE: another build to run (e.g. target-diag\release\neonshim.exe)
+if not defined NEONSHIM_EXE set "NEONSHIM_EXE=target\release\neonshim.exe"
+if not exist "%NEONSHIM_EXE%" ( echo Build first: cargo build --release -p neonshim ^&^& cargo xtask agility & exit /b 1 )
 
 rem --- submission and waits ---
 if not defined NEONSHIM_ASYNC_SUBMIT set NEONSHIM_ASYNC_SUBMIT=1
@@ -93,6 +95,6 @@ if /i "%1"=="old-sampler" set "TAG=old-sampler"
 if not exist logs mkdir logs
 set "LOG=logs\%TAG%-%TS%.log"
 echo Running. Log: %LOG%
-target\release\neonshim.exe run "%EXE%" --execute --console %CONSOLE% > "%LOG%" 2>&1
+"%NEONSHIM_EXE%" run "%EXE%" --execute --console %CONSOLE% > "%LOG%" 2>&1
 echo Game exited. Summary:
 python scripts\fps-report.py "%LOG%"

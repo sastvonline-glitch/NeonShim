@@ -80,3 +80,4 @@ Thumbs.db
 
 # Installer: the path to the user's own copy of the title
 neonshim.cfg
+/target-diag/
