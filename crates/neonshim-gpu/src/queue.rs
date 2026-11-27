@@ -85,11 +85,23 @@ static PRESENTS_HELD: AtomicU64 = AtomicU64::new(0);
 /// ([`Held::Present`]): our thread shows the frame when it gets there, in
 /// order, and the title records the next frame meanwhile.
 ///
-/// The title is one frame ahead at most: a present that finds the one
-/// before it still in a line runs the old way (the lines first, then
+/// The title is [`frames_ahead`] frames ahead at most (two): a present that
+/// finds that many still in lines runs the old way (the lines first, then
 /// itself), and so does a frame that is saved or listed, and a present
 /// that finds its queue's line empty. A wait nothing ever meets is
 /// therefore still forced, by the present after it.
+///
+/// Follows kelvaroq patches 0046 and 0048 (stellarr-studio/kelvaroq, also
+/// GPL-3.0, the same code base), which measured it in the heavy prologue
+/// (RTX 5080, 300 s each, same save): the title's time in the present call
+/// fell to 0.1 ms a frame, median heavy frame 115.5 -> 108.5 ms, p95
+/// 568 -> 262 ms, 1,022 -> 1,648 heavy frames. Two things beyond the
+/// switch itself are ported with it: a title's `SetEventOnCompletion` with
+/// no event blocks until the value is reached (`fence::set_event_on_completion`;
+/// it used to settle the flights and fail, which with presents behind the
+/// line does not set the fence), and our thread looks again at a line that
+/// stands at a wait without being woken ([`worker`]). Kelvaroq's 0048 also
+/// turns the switch on by default; here it stays off.
 ///
 /// What it assumes, beyond what [`behind`] does: title memory a submission
 /// reads stays as it was until the submission's fence is signalled, also
@@ -132,11 +144,36 @@ fn present_behind() -> bool {
     }
 }
 
+/// Whether presents go behind the line right now (the switch of
+/// [`present_behind`], `alt` included): the title's blocking fence waits
+/// then wait on the line instead of settling.
+#[cfg(windows)]
+pub(crate) fn async_present() -> bool {
+    present_behind()
+}
+
+/// How many frames the title may be ahead of the shown one
+/// (`NEONSHIM_FRAMES_AHEAD`, 2, from 1 to 8): the presents that may be in
+/// lines at once. With one the title's next present waited for ours in the
+/// heavy rooms (kelvaroq 0046); the bound also limits what a mistyped
+/// number could keep.
+#[cfg(windows)]
+fn frames_ahead() -> usize {
+    static LIMIT: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    *LIMIT.get_or_init(|| {
+        std::env::var("NEONSHIM_FRAMES_AHEAD")
+            .ok()
+            .and_then(|v| v.trim().parse::<usize>().ok())
+            .unwrap_or(2)
+            .clamp(1, 8)
+    })
+}
+
 /// With [`present_behind`]: puts the present of the next frame behind what
 /// the queue `this` holds. False if it has to run the old way.
 #[cfg(windows)]
 fn send_behind(this: This, planes: u32, plane_parameters: *const Plane) -> bool {
-    if this.is_null() || planes == 0 || PRESENTS_HELD.load(Ordering::Relaxed) != 0 {
+    if this.is_null() || planes == 0 || PRESENTS_HELD.load(Ordering::Relaxed) >= frames_ahead() as u64 {
         return false;
     }
     let frame = FRAMES.load(Ordering::Relaxed) + 1;
@@ -511,11 +548,27 @@ fn wake() {
 #[cfg(windows)]
 fn worker() {
     crate::framelog::keep_on_fast_cores("neonshim-submit");
+    let mut blocked = false;
     loop {
         {
             let mut work = lock(&WORK.0);
             while !*work {
-                work = WORK.1.wait(work).unwrap_or_else(|e| e.into_inner());
+                if blocked && async_present() {
+                    // A title store to a mapped fence value has no wake
+                    // call, and at the frame limit the title may have
+                    // nothing more to submit: look again at the head the
+                    // line stands at, without forcing it (kelvaroq 0046).
+                    let (next, timeout) = WORK
+                        .1
+                        .wait_timeout(work, std::time::Duration::from_millis(4))
+                        .unwrap_or_else(|e| e.into_inner());
+                    work = next;
+                    if timeout.timed_out() {
+                        break;
+                    }
+                } else {
+                    work = WORK.1.wait(work).unwrap_or_else(|e| e.into_inner());
+                }
             }
             *work = false;
         }
@@ -527,7 +580,7 @@ fn worker() {
                 crate::framelog::add(crate::framelog::T::WorkerSlow, 1);
             }
         }
-        release_held_now(false);
+        blocked = release_held_now(false);
         let (user_now, kernel_now) = crate::framelog::thread_times();
         crate::framelog::add(crate::framelog::T::WorkerUs, started.elapsed().as_micros() as u64);
         crate::framelog::add(crate::framelog::T::WorkerUserUs, user_now.saturating_sub(user));
@@ -736,11 +789,11 @@ pub(crate) fn before_sync() {
 }
 
 #[cfg(windows)]
-fn release_held_now(all: bool) {
+fn release_held_now(all: bool) -> bool {
     // One caller at a time, so a queue's submissions keep their order.
     static RELEASING: std::sync::Mutex<()> = std::sync::Mutex::new(());
     if lock(&WAITING).is_empty() {
-        return;
+        return false;
     }
     let _one = lock(&RELEASING);
     let was_here = RELEASING_HERE.replace(true);
@@ -755,7 +808,10 @@ fn release_held_now(all: bool) {
     // are forced, and none is left when this returns.
     let joining = !all && behind() && crate::host::late() && crate::host::host().is_some() && join_parts();
     let mut joined = Joined::default();
+    // Whether a line stood at a wait that was not met, in the last round.
+    let mut blocked;
     loop {
+        blocked = false;
         let queues = lock(&WAITING).clone();
         let mut moved = false;
         for q in queues {
@@ -771,6 +827,7 @@ fn release_held_now(all: bool) {
                     Some(&Held::Wait(fence, value))
                         if !all && crate::fence::completed(fence as This) < value =>
                     {
+                        blocked = true;
                         break;
                     }
                     // With parts taken and not sent: only what is known
@@ -779,12 +836,16 @@ fn release_held_now(all: bool) {
                     Some(Held::Value(wait)) if !all && !joined.is_empty() => {
                         if !wait.met() && !crate::host::late_met_known(wait) {
                             if !joined.meets(wait) {
+                                blocked = true;
                                 break;
                             }
                             JOINED[4].fetch_add(1, Ordering::Relaxed);
                         }
                     }
-                    Some(Held::Value(wait)) if !all && !value_met(wait) => break,
+                    Some(Held::Value(wait)) if !all && !value_met(wait) => {
+                        blocked = true;
+                        break;
+                    }
                     // The frame is shown behind the parts taken: they are
                     // sent first.
                     Some(Held::Present(..)) if !joined.is_empty() => break,
@@ -938,6 +999,7 @@ fn release_held_now(all: bool) {
             send_joined(&mut joined);
         }
     }
+    blocked
 }
 
 /// Whether a queue may pass `wait`: memory holds the value, or, with
