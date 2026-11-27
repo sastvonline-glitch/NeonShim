@@ -2503,6 +2503,8 @@ struct Deferred {
     uploads: Vec<ID3D12Resource>,
     /// The bytes of `uploads` (counted in [`ALIVE`] while they are held).
     upload_bytes: u64,
+    /// Of `uploads`, those of the upload pool: buffer, size, mapping.
+    pooled: Vec<(ID3D12Resource, u64, usize)>,
     /// Host objects the list's commands name (pipelines, root signatures,
     /// descriptor heaps): the title may release its objects before it
     /// submits the list.
@@ -2558,7 +2560,45 @@ impl Deferred {
         self.upload_bytes += size;
         self.uploads.push(buffer);
     }
+
+    /// As [`Self::hold_upload`], for a buffer of the upload pool
+    /// ([`upload_pool`]): mapped at `data`, given back to the pool when the
+    /// list is reset.
+    fn hold_pooled(&mut self, buffer: ID3D12Resource, size: u64, data: usize) {
+        self.hold_upload(buffer.clone(), size);
+        self.pooled.push((buffer, size, data));
+    }
 }
+
+/// Whether the lists' upload buffers of up to [`UPLOAD_POOL_LARGEST`]
+/// (texture data a title copy reads from a buffer, zeros for new levels)
+/// are kept when the list is reset and used again, by size rounded up to a
+/// power of two (`NEONSHIM_UPLOAD_POOL=1`; off by default). Each was made
+/// and freed: 86,000 upload buffers, 66 GB, in fifteen minutes of play
+/// (run of 2026-11-26), every one new pages for the system to fault in and
+/// zero, and the long frames of that run had 100,000 to 750,000 page
+/// faults each. Whoever takes one writes all the bytes it uses.
+fn upload_pool() -> bool {
+    static ON: OnceLock<bool> = OnceLock::new();
+    *ON.get_or_init(|| std::env::var_os("NEONSHIM_UPLOAD_POOL").is_some_and(|v| v == "1"))
+}
+
+/// The largest upload buffer the pool keeps, and the most bytes it keeps.
+const UPLOAD_POOL_LARGEST: u64 = 16 << 20;
+const UPLOAD_POOL_MOST: u64 = 256 << 20;
+
+/// Since the last frame line: pooled upload buffers used again, made.
+static UPLOAD_POOL_STATS: [std::sync::atomic::AtomicU64; 2] = [const { std::sync::atomic::AtomicU64::new(0) }; 2];
+
+/// Pooled upload buffers no list holds: the buffer and where it is mapped.
+static UPLOAD_SPARE: Mutex<Spare<PooledUpload>> = Mutex::new(Spare::new());
+
+/// A pooled upload buffer and where it is mapped.
+struct PooledUpload(ID3D12Resource, usize);
+
+// SAFETY: a mapping pointer of a live upload buffer, used by whoever holds
+// the buffer, one at a time.
+unsafe impl Send for PooledUpload {}
 
 impl Drop for Deferred {
     fn drop(&mut self) {
@@ -7527,6 +7567,15 @@ impl HostList {
         #[cfg(feature = "diagnostics")]
         let started = std::time::Instant::now();
         self._alive.used();
+        // Every submission of the list has run: nothing reads its pooled
+        // upload buffers any more ([`upload_pool`]).
+        let pooled = std::mem::take(&mut self.deferred().pooled);
+        if !pooled.is_empty() {
+            let mut spare = UPLOAD_SPARE.lock().unwrap_or_else(|e| e.into_inner());
+            for (buffer, size, data) in pooled {
+                drop(spare.give(PooledUpload(buffer, data), size, UPLOAD_POOL_MOST));
+            }
+        }
         *self.deferred() = Deferred::default();
         self.states.lock().unwrap_or_else(|e| e.into_inner()).clear();
         self.twins.lock().unwrap_or_else(|e| e.into_inner()).clear();
@@ -8309,6 +8358,24 @@ impl HostList {
     ///
     /// shortcut: one buffer per copy; pool them once uploads are frequent.
     pub(crate) fn upload(&self, host: &Host, size: u64) -> Option<(ID3D12Resource, *mut u8)> {
+        let pooled = size.max(64 << 10).next_power_of_two();
+        if upload_pool() && pooled <= UPLOAD_POOL_LARGEST {
+            let kept = UPLOAD_SPARE.lock().unwrap_or_else(|e| e.into_inner()).take(pooled);
+            let (buffer, data) = match kept {
+                Some(PooledUpload(buffer, data)) => {
+                    UPLOAD_POOL_STATS[0].fetch_add(1, Ordering::Relaxed);
+                    (buffer, data as *mut u8)
+                }
+                None => {
+                    UPLOAD_POOL_STATS[1].fetch_add(1, Ordering::Relaxed);
+                    let (buffer, data) = host.upload_buffer(pooled)?;
+                    name_frame(&buffer, || format!("list upload, pooled {pooled:#x}"));
+                    (buffer, data)
+                }
+            };
+            self.deferred().hold_pooled(buffer.clone(), pooled, data as usize);
+            return Some((buffer, data));
+        }
         let (buffer, data) = host.upload_buffer(size)?;
         name_frame(&buffer, || format!("list upload {size:#x}"));
         self.deferred().hold_upload(buffer.clone(), size);
@@ -9622,6 +9689,16 @@ impl Meter {
                     if rehash_runs() { "on" } else { "off" }
                 );
             }
+        }
+        if upload_pool() {
+            let [reused, made] = [0, 1].map(|i| UPLOAD_POOL_STATS[i].swap(0, Ordering::Relaxed));
+            let kept = UPLOAD_SPARE.lock().unwrap_or_else(|e| e.into_inner()).bytes;
+            tracing::info!(
+                "lists' upload buffers per frame (NEONSHIM_UPLOAD_POOL=1): {:.1} used again, {:.1} made; {} MB kept spare",
+                reused as f64 / frames,
+                made as f64 / frames,
+                kept >> 20
+            );
         }
         {
             let [own, asking, still, all] =
