@@ -80,3 +80,9 @@ Thumbs.db
 
 # Installer: the path to the user's own copy of the title
 neonshim.cfg
+
+# Experimental VIctory-NVIDIA install on a copy of NeonShim
+/vic-home/
+/vic-nvidia/nvidia-sdk/
+/vic-nvidia/target/
+/vic-nvidia/*.log
